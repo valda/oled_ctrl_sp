@@ -10,12 +10,18 @@ sudo apt-get install python-smbus kakasi
 '''
 import time
 import commands
+import subprocess
 import smbus
 import sys
 import re
 import io
 import json
 import pycurl
+from subprocess import Popen, PIPE
+try:
+    from shlex import quote
+except ImportError:
+    from pipes import quote
 
 class VolumioState:
     __slots__ = ['status', 'album', 'title', 'artist', 'seek', 'samplerate', 'bitdepth', 'volume']
@@ -24,8 +30,8 @@ class VolumioState:
         curl = pycurl.Curl()
         curl.setopt(pycurl.URL, 'http://localhost:3000/api/v1/getstate')
         sio = io.StringIO()
-        def writer(str):
-            sio.write(str.decode('utf-8'))
+        def writer(s):
+            sio.write(s.decode('utf-8'))
         curl.setopt(pycurl.WRITEFUNCTION, writer)
         curl.perform()
         #print sio.getvalue().encode('utf-8') #debug
@@ -41,16 +47,17 @@ PLAY = 1
 PAUSE = 2
 MSTOP = 1    # Scroll motion stop time
 
-class i2c(object):
+class Display:
+    PANEL_WIDTH = 16
+
     def __init__(self):
         self.bus = smbus.SMBus(1)
         self.addr = 0x3c          # OLED i2s address
         self.state = STOP         # state
         self.shift = 0            # Scroll shift value
         self.retry = 20           # retry for initialize
-        self.old_line1 = " "      # old str 1
-        self.old_line2 = " "      # old str 2
-        self.old_vol = " "        # old volume
+        self.line1_str = " "      #
+        self.line2_str = " "      #
         self.init()
 
     # initialize OLED
@@ -59,7 +66,7 @@ class i2c(object):
             try:
                 self.bus.write_byte_data(self.addr, 0, 0x0c) # Display ON
                 self.line1("Music           ")
-                self.line2("  Player Daemon ",0)
+                self.line2("  Player Daemon ")
             except IOError:
                 self.retry = self.retry -1
                 time.sleep(0.5)
@@ -72,40 +79,66 @@ class i2c(object):
     def ver_disp(self, ver):
         ver = ver.replace(r"Music Player Daemon ", "")
         self.line1("MPD Version    ")
-        self.line2("        "+ver+"  ",0)
+        self.line2("        "+ver+"  ")
+
+    def _send_line1(self, s):
+        s = s[0:self.PANEL_WIDTH]
+        print 'line1: ' + s #debug
+        vv = map(ord, list(s))
+        self.bus.write_byte_data(self.addr, 0, 0x80)
+        self.bus.write_i2c_block_data(self.addr, 0x40, vv)
+
+    def _send_line2(self, s):
+        s = s[0:self.PANEL_WIDTH]
+        print 'line2: ' + s.decode('cp932').encode('utf-8') #debug
+        vv = map(ord, list(s))
+        self.bus.write_byte_data(self.addr, 0, 0xA0)
+        self.bus.write_i2c_block_data(self.addr, 0x40, vv)
 
     # line1 send ascii data
-    def line1(self, str):
-        if str != self.old_line1:
-            self.old_line1 = str
+    def line1(self, s):
+        if s != self.line1_str:
+            self.line1_str = s
         else:
             return 0
         try:
-            print str #debug
-            self.bus.write_byte_data(self.addr, 0, 0x80)
-            vv = map(ord, list(str))
-            self.bus.write_i2c_block_data(self.addr, 0x40, vv)
+            self._send_line1(s)
         except IOError:
             return -1
 
-    # line2 send ascii data and Scroll
-    def line2(self, str, sp):
+    # line2 send ascii data
+    def line2(self, s):
+        s = self.toJISx0201kana(s)
+        if s != self.line2_str:
+            self.line2_str = s
+        else:
+            return 0
         try:
-            self.bus.write_byte_data(self.addr, 0, 0xA0)
-            self.maxlen = len(str) +MSTOP
-            if sp < MSTOP:
-                sp = 0
-            else:
-                sp = sp -MSTOP -1
-            if self.maxlen > sp + 16:
-                self.maxlen = sp + 16
-
-            moji = str[sp:self.maxlen]
-            print moji.decode('cp932').encode('utf-8') #debug
-            moji = map(ord, moji)
-            self.bus.write_i2c_block_data(self.addr, 0x40, moji)
+            self._send_line2(s)
         except IOError:
             return -1
+
+    def toJISx0201kana(self, s):
+        proc = Popen(['kakasi','-Jk','-Hk','-Kk','-Ea','-i','utf-8','-o','sjis'], stdin=PIPE, stdout=PIPE)
+        stdout_data = proc.communicate(s.encode('utf-8'))[0]
+        return stdout_data.rstrip()
+
+    def scroll_line2(self):
+        s = self.line2_str + r'  '
+        maxlen = len(s)
+        self.shift += 1
+        if self.shift >= maxlen:
+            self.shift = 0
+        s = s[self.shift:]
+        if len(s) < self.PANEL_WIDTH:
+            s += self.line2_str[0:self.PANEL_WIDTH]
+        self._send_line2(s)
+
+class Controller:
+    def __init__(self, display):
+        self.display = display
+        self.old_vol = " "        # old volume
+        self.old_line2 = " "      # old str 2
 
     # Get current song name
     def song(self, state):
@@ -113,11 +146,6 @@ class i2c(object):
             song_val = '%s : %s' % (state.artist, state.title)
         else:
             song_val = state.title
-
-        song_val = re.escape(song_val)
-        song_val = commands.getoutput('echo ' + song_val.encode('utf-8') +' | kakasi -Jk -Hk -Kk -Ea -s -i utf-8 -o sjis')
-
-        #print song_val.decode('cp932').encode('utf-8') #debug
         return song_val
 
     # Display Control
@@ -160,46 +188,38 @@ class i2c(object):
         # Volume and status for Line1
         if state_val == 'stop':
             if self.vol_disp != 0:
-                self.line1("STOP     Vol:"+vol_val)
+                self.display.line1("STOP     Vol:"+vol_val)
             else:
-                self.line1("STOP             ")
-                self.line2(addr_str+"        ",0)
+                self.display.line1("STOP             ")
+                self.display.line2(addr_str+"        ",0)
                 self.old_line2 = " "
         elif state_val == 'play':
             if self.vol_disp != 0:
-                self.line1("PLAY     Vol:"+vol_val)
+                self.display.line1("PLAY     Vol:"+vol_val)
             else:
-                self.line1("PLAY      "+time_val+"  ")
+                self.display.line1("PLAY      "+time_val+"  ")
         elif state_val == 'pause':
             if self.vol_disp != 0:
-                self.line1("PAUSE    Vol:"+vol_val)
+                self.display.line1("PAUSE    Vol:"+vol_val)
             else:
-                self.line1("PAUSE     "+time_val+"  ")
+                self.display.line1("PAUSE     "+time_val+"  ")
 
         # music name for Line2
         if state_val != 'stop':
             song_txt = self.song(state)
             song_txt = r'%s - %s/%s ' % (song_txt, samp_val.encode('cp932'), bitr_val.encode('cp932'))
+            self.display.line2(song_txt)
 
-            if song_txt != self.old_line2:
-                print 'song change', song_txt.decode('cp932').encode('utf-8') #debug
-                self.old_line2 = song_txt
-                self.shift = 0
-                self.line2("                ", 0)
-            self.line2(self.old_line2, self.shift)
-
-        self.shift = self.shift + 1
-        if self.shift > (len(self.old_line2)+8 +MSTOP):
-            self.shift = 0
-
+        self.display.scroll_line2()
 
 def main():
-    oled = i2c()
+    display = Display()
+    controller = Controller(display)
     netlink = False
     time.sleep(1)
     ver = commands.getoutput('mpd -V')
     ver_list = ver.splitlines()
-    oled.ver_disp(ver_list[0])
+    display.ver_disp(ver_list[0])
     time.sleep(2)
 
     while netlink is False:
@@ -213,10 +233,11 @@ def main():
     while True:
         time.sleep(0.25)
         try:
-            oled.disp()
+            controller.disp()
         except:
+            import traceback
+            traceback.print_exc()
             time.sleep(1)
-        pass
 
 if __name__ == '__main__':
     main()
