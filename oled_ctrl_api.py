@@ -9,19 +9,13 @@ sudo apt-get update
 sudo apt-get install python-smbus kakasi
 '''
 import time
-import commands
-import subprocess
 import smbus
 import sys
 import re
 import io
 import json
 import pycurl
-from subprocess import Popen, PIPE
-try:
-    from shlex import quote
-except ImportError:
-    from pipes import quote
+from subprocess import check_output, Popen, PIPE
 
 class VolumioState:
     __slots__ = ['status', 'album', 'title', 'artist', 'seek', 'samplerate', 'bitdepth', 'volume']
@@ -111,6 +105,7 @@ class Display:
         s = self.toJISx0201kana(s)
         if s != self.line2_str:
             self.line2_str = s
+            self.shift = 0
         else:
             return 0
         try:
@@ -119,7 +114,7 @@ class Display:
             return -1
 
     def toJISx0201kana(self, s):
-        proc = Popen(['kakasi','-Jk','-Hk','-Kk','-Ea','-i','utf-8','-o','sjis'], stdin=PIPE, stdout=PIPE)
+        proc = Popen('kakasi -Jk -Hk -Kk -Ea -i utf-8 -o sjis'.split(), stdin=PIPE, stdout=PIPE)
         stdout_data = proc.communicate(s.encode('utf-8'))[0]
         return stdout_data.rstrip()
 
@@ -172,7 +167,7 @@ class Controller:
         # stop
         if state.status == 'stop':
             # get IP address
-            ad = commands.getoutput('ip route')
+            ad = check_output('ip route')
             ad_list = ad.splitlines()
             addr_line = re.search('(\d+\.\d+\.\d+\.\d+) .*$', ad_list[1])
             addr_str = addr_line.group(1)
@@ -217,13 +212,13 @@ def main():
     controller = Controller(display)
     netlink = False
     time.sleep(1)
-    ver = commands.getoutput('mpd -V')
+    ver = check_output('mpd -V'.split())
     ver_list = ver.splitlines()
     display.ver_disp(ver_list[0])
     time.sleep(2)
 
     while netlink is False:
-        ip = commands.getoutput('ip route')
+        ip = check_output('ip route'.split())
         ip_list = ip.splitlines()
         if len(ip_list) >= 1:
             netlink = True
