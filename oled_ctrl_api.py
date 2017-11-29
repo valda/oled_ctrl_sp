@@ -77,14 +77,14 @@ class Display:
 
     def _send_line1(self, s):
         s = s[0:self.PANEL_WIDTH]
-        print 'line1: ' + s #debug
+        print 'line1: ' + s.decode('cp932') #debug
         vv = map(ord, list(s))
         self.bus.write_byte_data(self.addr, 0, 0x80)
         self.bus.write_i2c_block_data(self.addr, 0x40, vv)
 
     def _send_line2(self, s):
         s = s[0:self.PANEL_WIDTH]
-        print 'line2: ' + s.decode('cp932').encode('utf-8') #debug
+        print 'line2: ' + s.decode('cp932') #debug
         vv = map(ord, list(s))
         self.bus.write_byte_data(self.addr, 0, 0xA0)
         self.bus.write_i2c_block_data(self.addr, 0x40, vv)
@@ -102,7 +102,6 @@ class Display:
 
     # line2 send ascii data
     def line2(self, s):
-        s = self.toJISx0201kana(s)
         if s != self.line2_str:
             self.line2_str = s
             self.shift = 0
@@ -113,12 +112,9 @@ class Display:
         except IOError:
             return -1
 
-    def toJISx0201kana(self, s):
-        proc = Popen('kakasi -Jk -Hk -Kk -Ea -i utf-8 -o sjis'.split(), stdin=PIPE, stdout=PIPE)
-        stdout_data = proc.communicate(s.encode('utf-8'))[0]
-        return stdout_data.rstrip()
-
     def scroll_line2(self):
+        if len(self.line2_str) <= self.PANEL_WIDTH:
+            return
         s = self.line2_str + r'  '
         maxlen = len(s)
         self.shift += 1
@@ -133,7 +129,6 @@ class Controller:
     def __init__(self, display):
         self.display = display
         self.old_vol = " "        # old volume
-        self.old_line2 = " "      # old str 2
 
     # Get current song name
     def song(self, state):
@@ -142,6 +137,11 @@ class Controller:
         else:
             song_val = state.title
         return song_val
+
+    def toJISx0201kana(self, s):
+        proc = Popen('kakasi -Jk -Hk -Kk -Ea -i utf-8 -o sjis'.split(), stdin=PIPE, stdout=PIPE)
+        stdout_data = proc.communicate(s.encode('utf-8'))[0]
+        return stdout_data.rstrip()
 
     # Display Control
     def disp(self):
@@ -163,11 +163,12 @@ class Controller:
 
         bitr_val = state.bitdepth
         samp_val = state.samplerate
+        samp_val = '%.1f KHz' % samp_val if isinstance(samp_val, float) else str(samp_val)
 
         # stop
         if state.status == 'stop':
             # get IP address
-            ad = check_output('ip route')
+            ad = check_output('ip route'.split())
             ad_list = ad.splitlines()
             addr_line = re.search('(\d+\.\d+\.\d+\.\d+) .*$', ad_list[1])
             addr_str = addr_line.group(1)
@@ -186,8 +187,7 @@ class Controller:
                 self.display.line1("STOP     Vol:"+vol_val)
             else:
                 self.display.line1("STOP             ")
-                self.display.line2(addr_str+"        ",0)
-                self.old_line2 = " "
+                self.display.line2(addr_str)
         elif state_val == 'play':
             if self.vol_disp != 0:
                 self.display.line1("PLAY     Vol:"+vol_val)
@@ -202,6 +202,7 @@ class Controller:
         # music name for Line2
         if state_val != 'stop':
             song_txt = self.song(state)
+            song_txt = self.toJISx0201kana(song_txt)
             song_txt = r'%s - %s/%s ' % (song_txt, samp_val.encode('cp932'), bitr_val.encode('cp932'))
             self.display.line2(song_txt)
 
