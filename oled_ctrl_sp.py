@@ -60,7 +60,7 @@ class Oled:
             s = s + ' ' * (Oled.PANEL_WIDTH - slen)
         elif slen > Oled.PANEL_WIDTH:
             s = s[0:Oled.PANEL_WIDTH]
-        print 'line1: ' + s.decode('cp932') #debug
+        #print 'line1: ' + s.decode('cp932') #debug
         vv = map(ord, list(s))
         self.bus.write_byte_data(self.addr, 0, 0x80)
         self.bus.write_i2c_block_data(self.addr, 0x40, vv)
@@ -71,7 +71,7 @@ class Oled:
             s = s + ' ' * (Oled.PANEL_WIDTH - slen)
         elif slen > Oled.PANEL_WIDTH:
             s = s[0:Oled.PANEL_WIDTH]
-        print 'line2: ' + s.decode('cp932') #debug
+        #print 'line2: ' + s.decode('cp932') #debug
         vv = map(ord, list(s))
         self.bus.write_byte_data(self.addr, 0, 0xA0)
         self.bus.write_i2c_block_data(self.addr, 0x40, vv)
@@ -111,14 +111,14 @@ class Oled:
         self.shift += 1
         if self.shift >= maxlen:
             self.shift = 0
-            self.scroll_stop = 4
+            self.scroll_stop = 8
         s = s[self.shift:]
         if len(s) < Oled.PANEL_WIDTH:
             s += self.line2_str[0:Oled.PANEL_WIDTH]
         self._send_line2(s)
 
 class MpdCurrentSong:
-    __slots__ = ['artist', 'title', 'name', 'filename']
+    __slots__ = ['artist', 'title', 'album', 'name', 'filename']
     def __init__(self, resp):
         for attr in MpdCurrentSong.__slots__:
             setattr(self, attr, r'')
@@ -127,6 +127,8 @@ class MpdCurrentSong:
                 self.artist = line.replace(r"Artist: ", "")
             elif line.startswith(r"Title: "):
                 self.title = line.replace(r"Title: ", "")
+            elif line.startswith(r"Album: "):
+                self.album = line.replace(r"Album: ", "")
             elif line.startswith(r"Name: "):
                 self.name = line.replace(r"Name: ", "")
             elif line.startswith(r"file: "):
@@ -226,13 +228,13 @@ class MpdApi:
 class ShairportSyncWatcher(threading.Thread):
     def __init__(self):
         super(ShairportSyncWatcher, self).__init__()
-        self.reader = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                u'shairport-sync-metadata-reader')
-        self.metadata = u'/tmp/shairport-sync-metadata'
+        self._cmd = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 u'shairport-sync-metadata-reader')
+        self._metadata = u'/tmp/shairport-sync-metadata'
         self.state = 'stop'
         self.artist = u''
         self.title = u''
-        self.album_name = u''
+        self.album = u''
         self.duration = 0
         self._prgr_start = 0
         self._prgr_now = 0
@@ -240,9 +242,9 @@ class ShairportSyncWatcher(threading.Thread):
         self._prgr_time = time.time()
 
     def run(self):
-        with open(self.metadata) as fh:
-            reader = subprocess.Popen([self.reader], stdin=fh, stdout=subprocess.PIPE)
-            for line in iter(reader.stdout.readline, r''):
+        with open(self._metadata) as fh:
+            proc = subprocess.Popen([self._cmd], stdin=fh, stdout=subprocess.PIPE)
+            for line in iter(proc.stdout.readline, r''):
                 self._parse(line)
 
     def _parse(self, line):
@@ -253,7 +255,7 @@ class ShairportSyncWatcher(threading.Thread):
             elif m.group(1) == r'Title':
                 self.title = m.group(2)
             elif m.group(1) == r'Album Name':
-                self.album_name = m.group(2)
+                self.album = m.group(2)
             elif m.group(1) == r'"ssnc" "prgr"':
                 prgr = m.group(2).split(r'/')
                 (start, now, end) = [int(x) / 44100 for x in prgr]
@@ -271,7 +273,7 @@ class ShairportSyncWatcher(threading.Thread):
             #    print '`%s`: `%s`' % m.group(1,2)
 
     def get_current_pos(self):
-        if self.state == 'play':
+        if self.state != 'stop':
             pos = (self._prgr_now - self._prgr_start) + int(time.time() - self._prgr_time)
             return pos if pos < self.duration else self.duration
         return 0
@@ -299,8 +301,7 @@ class Controller:
         addr = match.group(1) if match else ''
         return addr
 
-    # Display Control
-    def disp(self):
+    def _disp_mpd(self):
         status = self.mpd_api.get_status()
 
         # Volume string
@@ -335,20 +336,40 @@ class Controller:
             if not (song.title or song.name or song.artist):
                 song_txt = song.filename
             else:
-                song_txt = song.artist + " : " + song.title + " " + song.name
+                album_or_name = song.album if song.album else song.name
+                song_txt = '{title:s} : {artist:s} - {album:s}  '.format(artist=song.artist, title=song.title, album=album_or_name)
             song_txt = self.toJISx0201kana(song_txt)
             song_txt = r'%s - %s %sbps' % (song_txt, status.samplerate, status.bitrate)
             self.oled.line2(song_txt)
 
+    def _disp_shairport_sync(self):
+        watcher = self.shairport_sync_watcher
+
+        time = '%2d:%02d' % (watcher.get_current_pos() / 60, watcher.get_current_pos() % 60)
+        self.oled.line1('{0:8s}  {1:6s}'.format(watcher.state.upper(), time))
+
+        song = '{title:s} : {artist:s} - {album:s}  '.format(artist=watcher.artist, title=watcher.title, album=watcher.album)
+        song = self.toJISx0201kana(song)
+        self.oled.line2(song)
+
+    # Display Control
+    def disp(self):
+        if self.shairport_sync_watcher.state != 'stop':
+            self._disp_shairport_sync()
+        else:
+            self._disp_mpd()
+
     def start(self):
         while True:
-            time.sleep(0.25)
             try:
                 self.disp()
+                time.sleep(0.25)
                 self.oled.update()
-            except:
+            except Exception as e:
                 traceback.print_exc()
-                time.sleep(1)
+                self.oled.line1(type(e).__name__)
+                self.oled.line2(str(e))
+                time.sleep(10)
 
 
 def main():
