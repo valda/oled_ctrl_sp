@@ -187,8 +187,6 @@ class MpdStatus:
                 self.samplerate = '%s/%s' % (samp_val, bit_val)
 
 class MpdApi:
-    HOST = 'localhost'     # mpd host
-    PORT = 6600            # mpd port
     BUFSIZE = 1024
 
     def __init__(self):
@@ -196,8 +194,8 @@ class MpdApi:
 
     # Soket Communication
     def init_socket(self):
-        self.soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.soc.connect((MpdApi.HOST, MpdApi.PORT))
+        self.soc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.soc.connect('/var/run/mpd/socket')
         answer = self.soc.recv(MpdApi.BUFSIZE)
         if not answer.startswith(r'OK MPD'):
             raise RuntimeError('Unexpected Answer: %s' % answer)
@@ -242,6 +240,10 @@ class ShairportSyncWatcher(threading.Thread):
         self._prgr_time = time.time()
 
     def run(self):
+        while True:
+            if os.path.exists(self._metadata):
+                break
+            time.sleep(1)
         with open(self._metadata) as fh:
             proc = subprocess.Popen([self._cmd], stdin=fh, stdout=subprocess.PIPE)
             for line in iter(proc.stdout.readline, r''):
@@ -303,6 +305,7 @@ class Controller:
         self.mpd_api = mpd_api
         self.shairport_sync_watcher = shairport_sync_watcher
         self.old_vol = " "        # old volume
+        self.old_song_txt = " "   # old song text (without sampling/bitrate)
         self.vol_disp = 0
         self.kakasi = Kakasi()
 
@@ -352,9 +355,12 @@ class Controller:
                 artist_or_album_or_name = [song.artist, song.album, song.name]
                 artist_or_album_or_name = ' - '.join([x for x in artist_or_album_or_name if x])
                 song_txt = '{0:s} : {1:s}'.format(song.title, artist_or_album_or_name)
-            song_txt = self.kakasi.toJISx0201kana(song_txt)
-            song_txt = r'{0:s} - {1:s} {2:s}bps'.format(song_txt, status.samplerate, status.bitrate)
-            self.oled.line2(song_txt)
+            if self.old_song_txt != song_txt:
+                # 可変ビットレート対策に曲名-アーティスト名が変わったときだけline2を更新する
+                self.old_song_txt = song_txt
+                song_txt = self.kakasi.toJISx0201kana(song_txt)
+                song_txt = r'{0:s} - {1:s} {2:s}bps'.format(song_txt, status.samplerate, status.bitrate)
+                self.oled.line2(song_txt)
 
     def _disp_shairport_sync(self):
         watcher = self.shairport_sync_watcher
@@ -362,9 +368,9 @@ class Controller:
         time = '%2d:%02d' % (watcher.get_current_pos() / 60, watcher.get_current_pos() % 60)
         self.oled.line1('{0:8s}  {1:6s}'.format(watcher.state.upper(), time))
 
-        song = '{title:s} : {artist:s} - {album:s}  '.format(artist=watcher.artist, title=watcher.title, album=watcher.album)
-        song = self.kakasi.toJISx0201kana(song)
-        self.oled.line2(song)
+        song_txt = '{title:s} : {artist:s} - {album:s}'.format(artist=watcher.artist, title=watcher.title, album=watcher.album)
+        song_txt = self.kakasi.toJISx0201kana(song_txt)
+        self.oled.line2(song_txt)
 
     # Display Control
     def disp(self):
@@ -403,8 +409,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    #state = VolumioState()
-    #for attr in state.__slots__:
-    #    v = getattr(state, attr)
-    #    v = v.encode('utf-8') if isinstance(v, unicode) else v
-    #    print attr, ': ', v
