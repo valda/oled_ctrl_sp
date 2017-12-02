@@ -279,6 +279,24 @@ class ShairportSyncWatcher(threading.Thread):
         return 0
 
 
+class Kakasi:
+    def __init__(self):
+        self._prev_src = None
+        self._prev_result = r''
+
+    def toJISx0201kana(self, s):
+        if self._prev_src == s:
+            return self._prev_result
+
+        proc = subprocess.Popen(['kakasi', '-Jk', '-Hk', '-Kk', '-Ea', '-i', 'utf-8', '-o', 'sjis'],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        result = proc.communicate(s)[0]
+
+        self._prev_result = result.rstrip()
+        self._prev_src = s
+        return self._prev_result
+
+
 class Controller:
     def __init__(self, oled, mpd_api, shairport_sync_watcher):
         self.oled = oled
@@ -286,12 +304,7 @@ class Controller:
         self.shairport_sync_watcher = shairport_sync_watcher
         self.old_vol = " "        # old volume
         self.vol_disp = 0
-
-    def toJISx0201kana(self, s):
-        proc = subprocess.Popen(['kakasi', '-Jk', '-Hk', '-Kk', '-Ea', '-i', 'utf-8', '-o', 'sjis'],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        stdout_data = proc.communicate(s)[0]
-        return stdout_data.rstrip()
+        self.kakasi = Kakasi()
 
     # get IP address
     def _get_ip_addr(self):
@@ -336,10 +349,11 @@ class Controller:
             if not (song.title or song.name or song.artist):
                 song_txt = song.filename
             else:
-                album_or_name = song.album if song.album else song.name
-                song_txt = '{title:s} : {artist:s} - {album:s}  '.format(artist=song.artist, title=song.title, album=album_or_name)
-            song_txt = self.toJISx0201kana(song_txt)
-            song_txt = r'%s - %s %sbps' % (song_txt, status.samplerate, status.bitrate)
+                artist_or_album_or_name = [song.artist, song.album, song.name]
+                artist_or_album_or_name = ' - '.join([x for x in artist_or_album_or_name if x])
+                song_txt = '{0:s} : {1:s}'.format(song.title, artist_or_album_or_name)
+            song_txt = self.kakasi.toJISx0201kana(song_txt)
+            song_txt = r'{0:s} - {1:s} {2:s}bps'.format(song_txt, status.samplerate, status.bitrate)
             self.oled.line2(song_txt)
 
     def _disp_shairport_sync(self):
@@ -349,7 +363,7 @@ class Controller:
         self.oled.line1('{0:8s}  {1:6s}'.format(watcher.state.upper(), time))
 
         song = '{title:s} : {artist:s} - {album:s}  '.format(artist=watcher.artist, title=watcher.title, album=watcher.album)
-        song = self.toJISx0201kana(song)
+        song = self.kakasi.toJISx0201kana(song)
         self.oled.line2(song)
 
     # Display Control
