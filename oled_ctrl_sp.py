@@ -19,7 +19,6 @@ import threading
 import time
 import traceback
 
-
 class Oled:
     PANEL_WIDTH = 16
 
@@ -49,9 +48,9 @@ class Oled:
                 time.sleep(2)
                 return 0
             except IOError:
-                retry -= 1
                 if retry == 0:
                     raise
+                retry -= 1
                 time.sleep(0.5)
 
     def _send_line1(self, s):
@@ -192,7 +191,7 @@ class MpdApi:
     def __init__(self):
         self.init_socket()
 
-    # Soket Communication
+    # Socket Communication
     def init_socket(self):
         self.soc = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.soc.connect('/var/run/mpd/socket')
@@ -208,11 +207,12 @@ class MpdApi:
                 resp = self.soc.recv(MpdApi.BUFSIZE)
                 return resp
             except socket.error:
-                retry -= 1
                 if retry == 0:
                     raise
+                retry -= 1
                 time.sleep(0.5)
-                self.init_socket
+                self.init_socket()
+
 
     # Get current song name
     def get_current_song(self):
