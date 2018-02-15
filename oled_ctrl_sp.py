@@ -366,7 +366,7 @@ class Controller:
         watcher = self.shairport_sync_watcher
 
         time = '%2d:%02d' % (watcher.get_current_pos() / 60, watcher.get_current_pos() % 60)
-        self.oled.line1('{0:8s}  {1:6s}'.format(watcher.state.upper(), time))
+        self.oled.line1('{0:8s}  {1:6s}'.format('AirPlay', time))
 
         song_txt = '{title:s} : {artist:s} - {album:s}'.format(artist=watcher.artist, title=watcher.title, album=watcher.album)
         song_txt = self.kakasi.toJISx0201kana(song_txt)
